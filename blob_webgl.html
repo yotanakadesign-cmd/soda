@@ -333,7 +333,20 @@ function isInsideBlob(x, y){
 const mouse={x:-9999,y:-9999,visible:false,sx:-9999,sy:-9999};
 stage.addEventListener('mousemove',e=>{const r=stage.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.visible=true;});
 stage.addEventListener('mouseleave',()=>{mouse.visible=false;});
-const cs={progress:0,cursorPresence:1};
+
+// タッチ対応
+function handleTouch(e){
+  e.preventDefault();
+  const r=stage.getBoundingClientRect();
+  const t=e.touches[0]||e.changedTouches[0];
+  if(t){mouse.x=t.clientX-r.left;mouse.y=t.clientY-r.top;mouse.visible=true;}
+}
+stage.addEventListener('touchstart',handleTouch,{passive:false});
+stage.addEventListener('touchmove',handleTouch,{passive:false});
+stage.addEventListener('touchend',e=>{
+  // 指を離したら少し遅れてフェードアウト
+  setTimeout(()=>{mouse.visible=false;},800);
+});
 
 let lastTime=performance.now();
 let t=0;
