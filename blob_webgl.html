@@ -165,18 +165,25 @@ void main(){
   if(gradT < u_gradPos){
     float lt = gradT / max(u_gradPos, 0.001);
     mainCol = mix(u_cInner, u_cMid, lt);
-  } else {
+} else {
     float lt = (gradT - u_gradPos) / max(1.0 - u_gradPos, 0.001);
     mainCol = mix(u_cMid, u_cOuter, lt);
+  }
 
-// カーソル吸収時：内側から黄色が滲み出す（ムラあり）
+  // カーソル吸収時：内側から黄色が滲み出す（ムラあり）
   vec3 yellow = vec3(0.98, 0.92, 0.65);
   float eased = 1.0 - u_cursorPres;
 
   // 赤玉の熱：青紫の中心面をほのかに暖色寄りにシフト
-  vec3 warmShift = vec3(0.20, 0.05, -0.05);  // 赤+ / 緑微 / 青-
+  vec3 warmShift = vec3(0.20, 0.05, -0.05);
   float warmAmt = eased * (1.0 - gradT * 0.7) * 0.35;
   mainCol += warmShift * warmAmt;
+
+  float yMix = eased * (1.0 - gradT) * 0.7;
+  // ノイズで不均一に
+  float yNoise = valueNoise(sampledFrag * 0.012 + vec2(u_time * 0.5, 0.0));
+  yMix *= (0.4 + yNoise * 0.8);
+  mainCol = mix(mainCol, yellow, yMix);
 
   float yMix = eased * (1.0 - gradT) * 0.7;
   // ノイズで不均一に
@@ -347,7 +354,7 @@ stage.addEventListener('touchend',e=>{
   // 指を離したら少し遅れてフェードアウト
   setTimeout(()=>{mouse.visible=false;},800);
 });
-
+const cs={progress:0,cursorPresence:1};
 let lastTime=performance.now();
 let t=0;
 
