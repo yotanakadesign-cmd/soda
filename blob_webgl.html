@@ -169,9 +169,15 @@ void main(){
     float lt = (gradT - u_gradPos) / max(1.0 - u_gradPos, 0.001);
     mainCol = mix(u_cMid, u_cOuter, lt);
 
-  // カーソル吸収時：内側から黄色が滲み出す（ムラあり）
+// カーソル吸収時：内側から黄色が滲み出す（ムラあり）
   vec3 yellow = vec3(0.98, 0.92, 0.65);
   float eased = 1.0 - u_cursorPres;
+
+  // 赤玉の熱：青紫の中心面をほのかに暖色寄りにシフト
+  vec3 warmShift = vec3(0.20, 0.05, -0.05);  // 赤+ / 緑微 / 青-
+  float warmAmt = eased * (1.0 - gradT * 0.7) * 0.35;
+  mainCol += warmShift * warmAmt;
+
   float yMix = eased * (1.0 - gradT) * 0.7;
   // ノイズで不均一に
   float yNoise = valueNoise(sampledFrag * 0.012 + vec2(u_time * 0.5, 0.0));
