@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blob</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:transparent;}
+.stage{width:100%;height:100%;position:relative;background:#F2EFE6;cursor:none;}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
+</style>
+</head>
+<body>
+<div class="stage" id="stage"><canvas id="c"></canvas></div>
+<script>
+var P={"cBg":"#F2EFE6","blobSize":30,"morphAmp":20,"morphSpd":100,"skewX":31,"skewY":0,"holeSize":4,"holeOX":-3,"holeOY":-6,"holeAmp":50,"holeSpd":55,"l0on":true,"l0scale":138,"l0blur":4,"l0alpha":36,"l1on":true,"l1scale":117,"l1blur":3,"l1alpha":31,"l2on":true,"l2scale":97,"l2blur":1,"l2alpha":65,"mainScale":88,"cInner":"#6a6caf","cOuter":"#99849f","midHue":-42,"midSat":10,"mainAlpha":97,"gradPos":70,"shOn":true,"shScale":70,"shBlur":4,"shStr":19,"cHole":"#EEE4D2","holeBlur":14,"holeAlpha":50,"intOn":true,"cursorSize":11,"cursorColor":"#a83a3a","engulfRange":50,"engulfStr":50,"swellAmt":4,"durationIn":1512,"durationOut":3000,"easeP1x":0.41,"easeP1y":0.19,"easeP2x":0,"easeP2y":1};
+
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+const stage=document.getElementById('stage');
+stage.style.background=P.cBg;
+
+// DPR上限2でRetinaも軽量化
+const DPR=Math.min(window.devicePixelRatio||1,2);
+
+function resize(){
+  const r=stage.getBoundingClientRect();
+  cv.width=r.width*DPR;cv.height=r.height*DPR;
+}
+resize();window.addEventListener('resize',resize);
+
+function hexToRgb(hex){return[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];}
+function rgbToHsl(r,g,b){r/=255;g/=255;b/=255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b),l=(mx+mn)/2;if(mx===mn)return[0,0,l*100];const d=mx-mn,s=l>0.5?d/(2-mx-mn):d/(mx+mn);let h=0;if(mx===r)h=((g-b)/d+(g<b?6:0))/6;else if(mx===g)h=((b-r)/d+2)/6;else h=((r-g)/d+4)/6;return[h*360,s*100,l*100];}
+function hslToRgb(h,s,l){h=((h%360)+360)%360;s=Math.max(0,Math.min(100,s))/100;l/=100;const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2;let r=0,g=0,b=0;if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}return[Math.round((r+m)*255),Math.round((g+m)*255),Math.round((b+m)*255)];}
+function lerpColor(a,b,f,hs,ss){const ha=rgbToHsl(a[0],a[1],a[2]),hb=rgbToHsl(b[0],b[1],b[2]);const mp=Math.sin(f*Math.PI);return hslToRgb(ha[0]*(1-f)+hb[0]*f+hs*mp,ha[1]*(1-f)+hb[1]*f+ss*mp,ha[2]*(1-f)+hb[2]*f);}
+
+// 静的色をresize時/起動時のみ計算（毎フレーム実行を回避）
+let CACHED={};
+function recalcColors(){
+  CACHED.iRgb=hexToRgb(P.cInner);
+  CACHED.oRgb=hexToRgb(P.cOuter);
+  CACHED.hoRgb=hexToRgb(P.cHole);
+  CACHED.lc0=lerpColor(CACHED.iRgb,CACHED.oRgb,0.0,P.midHue,P.midSat);
+  CACHED.lc1=lerpColor(CACHED.iRgb,CACHED.oRgb,0.35,P.midHue,P.midSat);
+  CACHED.lc2=lerpColor(CACHED.iRgb,CACHED.oRgb,0.65,P.midHue,P.midSat);
+  CACHED.midRgb=lerpColor(CACHED.iRgb,CACHED.oRgb,0.5,P.midHue,P.midSat);
+}
+recalcColors();
+
+function bezierY(t,p1y,p2y){const u=1-t;return 3*u*u*t*p1y+3*u*t*t*p2y+t*t*t;}
+function bezierX(t,p1x,p2x){const u=1-t;return 3*u*u*t*p1x+3*u*t*t*p2x+t*t*t;}
+function evalBezier(x,p1x,p1y,p2x,p2y){if(x<=0)return 0;if(x>=1)return 1;let lo=0,hi=1,t=x;for(let i=0;i<18;i++){t=(lo+hi)/2;const xt=bezierX(t,p1x,p2x);if(Math.abs(xt-x)<0.0005)break;if(xt<x)lo=t;else hi=t;}return bezierY(t,p1y,p2y);}
+
+const MODES=[{n:2,phase:0.00,spd:0.038,bA:0.068},{n:3,phase:1.31,spd:0.055,bA:0.042},{n:4,phase:2.57,spd:0.072,bA:0.026},{n:5,phase:0.88,spd:0.090,bA:0.014},{n:6,phase:3.40,spd:0.110,bA:0.008}];
+const HMODES=[{n:2,phase:2.20,spd:0.042,bA:0.090},{n:3,phase:0.70,spd:0.062,bA:0.052},{n:4,phase:3.80,spd:0.082,bA:0.026},{n:5,phase:1.50,spd:0.102,bA:0.012}];
+// 軽量化：512→256に半減（見た目ほぼ同じ）
+const PTS=256;
+// 角度を事前計算
+const ANGLES=new Float32Array(PTS),COS_A=new Float32Array(PTS),SIN_A=new Float32Array(PTS);
+for(let i=0;i<PTS;i++){const a=(i/PTS)*Math.PI*2;ANGLES[i]=a;COS_A[i]=Math.cos(a);SIN_A[i]=Math.sin(a);}
+
+function radAt(angle,modes,t,R,amp){let r=R;for(let i=0;i<modes.length;i++){const m=modes[i];const env=1+0.15*Math.sin(m.spd*0.37*t+m.phase*1.9);r+=R*amp*m.bA*env*Math.cos(m.n*angle+m.phase+m.spd*t*18);}return r;}
+
+function buildPtsEngulf(cx,cy,R,modes,t,amp,ox,oy,sx,sy,cs,swell){
+  ox=ox||0;oy=oy||0;sx=sx||1;sy=sy||1;swell=swell||1;
+  const p=new Array(PTS);
+  const useC=cs&&cs.active&&cs.cursorPresence>0.01;
+  const range=P.engulfRange;
+  const rangeSq=range*range*1.8;
+  const str=P.engulfStr/100;
+  const Rs=R*swell;
+  const maxDisp=Math.min(R,range)*0.32;
+  for(let i=0;i<PTS;i++){
+    const a=ANGLES[i];
+    const r=radAt(a,modes,t,Rs,amp);
+    let px=cx+ox+COS_A[i]*r*sx;
+    let py=cy+oy+SIN_A[i]*r*sy;
+    if(useC){
+      const dx=cs.x-px,dy=cs.y-py;
+      const distSq=dx*dx+dy*dy;
+      // 距離が引力範囲の3倍を超えてたらスキップ（ガウス減衰でほぼ0）
+      if(distSq<rangeSq*4.5){
+        const dist=Math.sqrt(distSq);
+        const falloff=Math.exp(-distSq/rangeSq);
+        const presence=cs.cursorPresence;
+        if(dist>0.5){
+          const tx=cs.x-(dx/dist)*Math.min(dist*0.5,range*0.4);
+          const ty=cs.y-(dy/dist)*Math.min(dist*0.5,range*0.4);
+          const ax=tx-px,ay=ty-py;
+          const alen=Math.sqrt(ax*ax+ay*ay)||1;
+          const disp=Math.min(falloff*str*presence*range*0.6,maxDisp);
+          px+=(ax/alen)*disp;py+=(ay/alen)*disp;
+        }
+      }
+    }
+    p[i]=[px,py];
+  }
+  return p;
+}
+function buildPts(cx,cy,R,modes,t,amp,ox,oy,sx,sy){return buildPtsEngulf(cx,cy,R,modes,t,amp,ox,oy,sx,sy,null,1);}
+function traceCurve(pts,rev){const p=rev?pts.slice().reverse():pts,n=p.length;ctx.moveTo((p[0][0]+p[1][0])/2,(p[0][1]+p[1][1])/2);for(let i=0;i<n;i++){const c=p[(i+1)%n],nx=p[(i+2)%n];ctx.quadraticCurveTo(c[0],c[1],(c[0]+nx[0])/2,(c[1]+nx[1])/2);}ctx.closePath();}
+function pointInPoly(x,y,pts){let inside=false;for(let i=0,j=pts.length-1;i<pts.length;j=i++){const xi=pts[i][0],yi=pts[i][1],xj=pts[j][0],yj=pts[j][1];if(((yi>y)!=(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi))inside=!inside;}return inside;}
+
+const mouse={x:-9999,y:-9999,visible:false,sx:-9999,sy:-9999};
+stage.addEventListener('mousemove',e=>{const r=stage.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.visible=true;});
+stage.addEventListener('mouseleave',()=>{mouse.visible=false;});
+const cs={x:-9999,y:-9999,active:false,inside:false,cursorPresence:1,progress:0};
+
+let lastTime=performance.now();
+let t=0;
+function draw(){
+  const now=performance.now();
+  // dt上限を入れてタブ復帰時の暴発防止
+  let dt=now-lastTime;if(dt>100)dt=16;
+  lastTime=now;
+
+  const W=cv.width/DPR,H=cv.height/DPR;
+  const cx=W/2,cy=H/2;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.fillStyle=P.cBg;ctx.fillRect(0,0,W,H);
+
+  if(mouse.visible){if(mouse.sx<-1000){mouse.sx=mouse.x;mouse.sy=mouse.y;}mouse.sx+=(mouse.x-mouse.sx)*0.18;mouse.sy+=(mouse.y-mouse.sy)*0.18;}
+
+  const R=Math.min(W,H)*(P.blobSize/100);
+  const Hr=R*(P.holeSize/100);
+  const hox=R*(P.holeOX/100),hoy=R*(P.holeOY/100);
+  const amp=P.morphAmp/100,ss=P.morphSpd/50;
+  const hamp=P.holeAmp/100,hss=P.holeSpd/50;
+  const sx=1+(P.skewX/100),sy=1+(P.skewY/100);
+  const t1=t*0.88*ss,t2=t*0.94*ss,t3=t*ss;
+  const ht0=t*1.08*hss+4.2,ht1=t*1.03*hss+2.8,ht2=t*0.97*hss+1.1;
+
+  cs.active=P.intOn&&mouse.visible;cs.x=mouse.sx;cs.y=mouse.sy;
+  const oCheck=buildPts(cx,cy,R*(P.mainScale/100),MODES,t3,amp,0,0,sx,sy);
+  const hCheck=buildPts(cx,cy,Hr*1.06,HMODES,ht2,hamp,hox,hoy);
+  if(cs.active){
+    const inO=pointInPoly(mouse.sx,mouse.sy,oCheck);
+    const inH=pointInPoly(mouse.sx,mouse.sy,hCheck);
+    cs.inside=inO&&!inH;
+  }else{cs.inside=false;}
+  if(cs.inside)cs.progress=Math.min(1,cs.progress+dt/P.durationIn);
+  else cs.progress=Math.max(0,cs.progress-dt/P.durationOut);
+  const eased=evalBezier(cs.progress,P.easeP1x,P.easeP1y,P.easeP2x,P.easeP2y);
+  const swell=1+(P.swellAmt/100)*eased;
+  cs.cursorPresence=1-eased;
+
+  const iRgb=CACHED.iRgb,oRgb=CACHED.oRgb,hoRgb=CACHED.hoRgb;
+  var o,h;
+
+  if(P.l0on){
+    o=buildPtsEngulf(cx,cy,R*(P.l0scale/100),MODES,t1,amp,0,0,sx,sy,cs,swell);
+    h=buildPts(cx,cy,Hr*0.75,HMODES,ht0,hamp,hox,hoy);
+    ctx.save();if(P.l0blur>0)ctx.filter='blur('+P.l0blur+'px)';
+    ctx.beginPath();traceCurve(o,false);traceCurve(h,true);
+    ctx.fillStyle='rgba('+CACHED.lc0+','+(P.l0alpha/100)+')';ctx.fill('evenodd');ctx.restore();
+  }
+  if(P.l1on){
+    o=buildPtsEngulf(cx,cy,R*(P.l1scale/100),MODES,t2,amp,0,0,sx,sy,cs,swell);
+    h=buildPts(cx,cy,Hr*0.88,HMODES,ht1,hamp,hox,hoy);
+    ctx.save();if(P.l1blur>0)ctx.filter='blur('+P.l1blur+'px)';
+    ctx.beginPath();traceCurve(o,false);traceCurve(h,true);
+    ctx.fillStyle='rgba('+CACHED.lc1+','+(P.l1alpha/100)+')';ctx.fill('evenodd');ctx.restore();
+  }
+  if(P.l2on){
+    o=buildPtsEngulf(cx,cy,R*(P.l2scale/100),MODES,t2*1.04,amp,0,0,sx,sy,cs,swell);
+    h=buildPts(cx,cy,Hr*0.97,HMODES,ht1*0.96,hamp,hox,hoy);
+    ctx.save();if(P.l2blur>0)ctx.filter='blur('+P.l2blur+'px)';
+    ctx.beginPath();traceCurve(o,false);traceCurve(h,true);
+    ctx.fillStyle='rgba('+CACHED.lc2+','+(P.l2alpha/100)+')';ctx.fill('evenodd');ctx.restore();
+  }
+  const oMain=buildPtsEngulf(cx,cy,R*(P.mainScale/100),MODES,t3,amp,0,0,sx,sy,cs,swell);
+  const hMain=buildPts(cx,cy,Hr*1.06,HMODES,ht2,hamp,hox,hoy);
+  const gp=P.gradPos/100;
+  ctx.save();ctx.beginPath();traceCurve(oMain,false);traceCurve(hMain,true);
+  var g=ctx.createRadialGradient(cx-R*0.25,cy-R*0.20,R*0.05,cx+R*0.15,cy+R*0.10,R*(P.mainScale/100)*1.1*swell);
+  g.addColorStop(0,'rgba('+iRgb+','+(P.mainAlpha/100)+')');
+  g.addColorStop(gp,'rgba('+CACHED.midRgb[0]+','+CACHED.midRgb[1]+','+CACHED.midRgb[2]+','+(P.mainAlpha/100)+')');
+  g.addColorStop(1,'rgba('+oRgb+','+(P.mainAlpha/100)+')');
+  ctx.fillStyle=g;ctx.fill('evenodd');ctx.restore();
+
+  if(P.shOn){
+    const is=buildPtsEngulf(cx,cy,R*(P.shScale/100),MODES,t3*0.98+0.3,amp,0,0,sx,sy,cs,swell);
+    const hs=buildPts(cx,cy,Hr*1.15,HMODES,ht2*1.02,hamp,hox,hoy);
+    ctx.save();if(P.shBlur>0)ctx.filter='blur('+P.shBlur+'px)';
+    ctx.beginPath();traceCurve(is,false);traceCurve(hs,true);
+    ctx.fillStyle='rgba('+iRgb[0]+','+iRgb[1]+','+iRgb[2]+','+(P.shStr/100)+')';
+    ctx.fill('evenodd');ctx.restore();
+  }
+  const rim=buildPts(cx,cy,Hr*1.22,HMODES,ht0*0.93,hamp,hox,hoy);
+  const core=buildPts(cx,cy,Hr*0.62,HMODES,ht2*1.05,hamp,hox,hoy);
+  ctx.save();if(P.holeBlur>0)ctx.filter='blur('+P.holeBlur+'px)';
+  ctx.beginPath();traceCurve(rim,false);traceCurve(core,true);
+  ctx.fillStyle='rgba('+hoRgb+','+(P.holeAlpha/100)+')';ctx.fill('evenodd');ctx.restore();
+  const core2=buildPts(cx,cy,Hr*0.72,HMODES,ht2,hamp,hox,hoy);
+  ctx.save();ctx.filter='blur(3px)';ctx.beginPath();traceCurve(core2,false);
+  ctx.fillStyle='rgba('+hoRgb+',0.88)';ctx.fill();ctx.restore();
+  const inn=buildPts(cx,cy,Hr*0.50,HMODES,ht2*1.08,hamp,hox,hoy);
+  ctx.save();ctx.beginPath();traceCurve(inn,false);
+  ctx.fillStyle='rgba('+hoRgb+',0.94)';ctx.fill();ctx.restore();
+
+  // カーソル：本canvasに直接描画（別レイヤー廃止で軽量化）
+  if(P.intOn&&mouse.visible&&cs.cursorPresence>0.01){
+    ctx.save();
+    ctx.globalAlpha=cs.cursorPresence;
+    ctx.beginPath();
+    ctx.arc(mouse.sx,mouse.sy,P.cursorSize,0,Math.PI*2);
+    ctx.fillStyle=P.cursorColor;
+    ctx.fill();
+    ctx.restore();
+  }
+  t+=0.008;
+  requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>
