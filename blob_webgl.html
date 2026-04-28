@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blob</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:transparent;}
+.stage{width:100%;height:100%;position:relative;background:#F2EFE6;cursor:none;}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
+</style>
+</head>
+<body>
+<div class="stage" id="stage"><canvas id="c"></canvas></div>
+
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main(){
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+</script>
+
+<script id="fs" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 v_uv;
+
+uniform vec2  u_res;        // canvas px (DPR込)
+uniform float u_time;
+uniform vec2  u_cursor;     // px
+uniform float u_cursorPres; // 0..1
+uniform float u_swell;
+uniform float u_intActive;  // 0 or 1
+uniform vec3  u_bg;
+uniform vec3  u_cInner;
+uniform vec3  u_cMid;
+uniform vec3  u_cOuter;
+uniform vec3  u_cHole;
+uniform vec3  u_cCursor;
+uniform float u_cursorSize;
+uniform float u_blobSize;       // 0..1
+uniform float u_morphAmp;
+uniform float u_morphSpd;
+uniform float u_holeSize;
+uniform vec2  u_holeOff;        // -1..1
+uniform float u_holeAmp;
+uniform float u_holeSpd;
+uniform vec2  u_skew;           // x,y scale 1.0±
+uniform float u_engulfRange;
+uniform float u_engulfStr;
+uniform float u_grainAmt;
+uniform float u_mainAlpha;
+uniform float u_gradPos;
+
+const float PI = 3.14159265358979;
+
+// blob外縁の半径を角度から計算（モード合成）
+float radOuter(float angle, float t){
+  float r = 1.0;
+  float amp = u_morphAmp;
+  // n=2..6
+  r += amp * 0.068 * (1.0 + 0.15*sin(0.038*0.37*t + 0.0)) * cos(2.0*angle + 0.0   + 0.038*t*18.0);
+  r += amp * 0.042 * (1.0 + 0.15*sin(0.055*0.37*t + 1.31*1.9)) * cos(3.0*angle + 1.31  + 0.055*t*18.0);
+  r += amp * 0.026 * (1.0 + 0.15*sin(0.072*0.37*t + 2.57*1.9)) * cos(4.0*angle + 2.57  + 0.072*t*18.0);
+  r += amp * 0.014 * (1.0 + 0.15*sin(0.090*0.37*t + 0.88*1.9)) * cos(5.0*angle + 0.88  + 0.090*t*18.0);
+  r += amp * 0.008 * (1.0 + 0.15*sin(0.110*0.37*t + 3.40*1.9)) * cos(6.0*angle + 3.40  + 0.110*t*18.0);
+  return r;
+}
+
+float radHole(float angle, float t){
+  float r = 1.0;
+  float amp = u_holeAmp;
+  r += amp * 0.090 * (1.0 + 0.15*sin(0.042*0.37*t + 2.20*1.9)) * cos(2.0*angle + 2.20 + 0.042*t*18.0);
+  r += amp * 0.052 * (1.0 + 0.15*sin(0.062*0.37*t + 0.70*1.9)) * cos(3.0*angle + 0.70 + 0.062*t*18.0);
+  r += amp * 0.026 * (1.0 + 0.15*sin(0.082*0.37*t + 3.80*1.9)) * cos(4.0*angle + 3.80 + 0.082*t*18.0);
+  r += amp * 0.012 * (1.0 + 0.15*sin(0.102*0.37*t + 1.50*1.9)) * cos(5.0*angle + 1.50 + 0.102*t*18.0);
+  return r;
+}
+
+// シンプルなhash乱数（グレイン用）
+float hash(vec2 p){
+  p = fract(p*vec2(123.34, 456.21));
+  p += dot(p, p+45.32);
+  return fract(p.x*p.y);
+}
+
+// カーソル変形：fragment位置をカーソル方向に「包む」ように移動させる
+// CPU実装と同じ理屈
+vec2 applyEngulf(vec2 pos, vec2 cursor, float range, float strength, float presence){
+  if(presence < 0.01) return pos;
+  vec2 d = cursor - pos;
+  float dist = length(d);
+  if(dist < 0.5) return pos;
+  float falloff = exp(-(dist*dist)/(range*range*1.8));
+  float maxDisp = range * 0.32;
+  vec2 dir = d / dist;
+  vec2 target = cursor - dir * min(dist*0.5, range*0.4);
+  vec2 av = target - pos;
+  float alen = max(length(av), 0.0001);
+  float disp = min(falloff * strength * presence * range * 0.6, maxDisp);
+  return pos + (av/alen) * disp;
+}
+
+void main(){
+  vec2 frag = v_uv * u_res;
+  vec2 center = u_res * 0.5;
+  float minRes = min(u_res.x, u_res.y);
+  float R = minRes * u_blobSize;
+  float Hr = R * u_holeSize;
+  vec2 holePos = center + u_holeOff * R;
+
+  float ss = u_morphSpd;
+  float hss = u_holeSpd;
+  float t1 = u_time * 0.88 * ss;
+  float t2 = u_time * 0.94 * ss;
+  float t3 = u_time * ss;
+  float ht2 = u_time * 0.97 * hss + 1.1;
+
+  // カーソル変形を逆方向に適用（fragment位置を歪ませる代わりに、
+  // 外縁判定の中でfragmentを「変形前の空間」に逆写像する）
+  vec2 sampledFrag = frag;
+  if(u_intActive > 0.5){
+    sampledFrag = applyEngulf(frag, u_cursor, u_engulfRange, u_engulfStr, u_cursorPres);
+  }
+
+  // 外縁の角度・距離を計算（skew適用）
+  vec2 d = sampledFrag - center;
+  vec2 dSkew = vec2(d.x / u_skew.x, d.y / u_skew.y);
+  float angle = atan(dSkew.y, dSkew.x);
+  float dist = length(dSkew);
+
+  // 各レイヤーの半径（時間オフセット違いで生命感）
+  float rMain = R * 0.88 * radOuter(angle, t3) * u_swell;
+  float rL2   = R * 0.97 * radOuter(angle, t2 * 1.04) * u_swell;
+  float rL1   = R * 1.17 * radOuter(angle, t2) * u_swell;
+  float rL0   = R * 1.38 * radOuter(angle, t1) * u_swell;
+
+  // 距離からSDF（負＝内側、正＝外側）
+  float sdMain = dist - rMain;
+  float sdL2   = dist - rL2;
+  float sdL1   = dist - rL1;
+  float sdL0   = dist - rL0;
+
+  // 穴のSDF
+  vec2 dh = sampledFrag - holePos;
+  float angleH = atan(dh.y, dh.x);
+  float distH = length(dh);
+  float rHole = Hr * 1.06 * radHole(angleH, ht2);
+  float sdHole = distH - rHole;
+  // 穴の縁滲み用
+  float rHoleSoft = Hr * 1.22 * radHole(angleH, ht2*0.93);
+  float sdHoleSoft = distH - rHoleSoft;
+
+  // 中心に近いほど明るくする放射グラデ
+  float gradT = clamp((dist / (R * 0.88 * 1.1)), 0.0, 1.0);
+  // gradPos で中間色の位置を制御
+  vec3 mainCol;
+  if(gradT < u_gradPos){
+    float lt = gradT / max(u_gradPos, 0.001);
+    mainCol = mix(u_cInner, u_cMid, lt);
+  } else {
+    float lt = (gradT - u_gradPos) / max(1.0 - u_gradPos, 0.001);
+    mainCol = mix(u_cMid, u_cOuter, lt);
+  }
+
+  // ============================================================
+  // レイヤー合成
+  // ============================================================
+  vec3 col = u_bg;
+
+  // L0：最外層（広い滲み）
+  // smoothstep で SDF=0 の境界を滑らかに
+  float aL0 = smoothstep(20.0, -5.0, sdL0) * 0.36;
+  col = mix(col, u_cInner, aL0);
+
+  // L1
+  float aL1 = smoothstep(8.0, -3.0, sdL1) * 0.31;
+  col = mix(col, u_cMid, aL1);
+
+  // L2
+  float aL2 = smoothstep(3.0, -2.0, sdL2) * 0.65;
+  col = mix(col, u_cOuter, aL2);
+
+  // Main
+  // 穴を引き算する
+  float mainAlpha = smoothstep(2.0, -2.0, sdMain) * u_mainAlpha;
+  // 穴の影響：穴の内側はメインが消える
+  float holeMask = smoothstep(-3.0, 3.0, sdHole);
+  mainAlpha *= holeMask;
+  col = mix(col, mainCol, mainAlpha);
+
+  // Shading（軽いインナーシャドウ）
+  float shadAlpha = smoothstep(8.0, -4.0, dist - R*0.70*radOuter(angle, t3*0.98+0.3)*u_swell) * 0.19;
+  shadAlpha *= holeMask;
+  col = mix(col, u_cInner * 0.7, shadAlpha);
+
+  // 穴の塗り（縁が滲む）
+  float holeFill = smoothstep(8.0, -3.0, sdHoleSoft);
+  // 内側ほど濃く
+  holeFill *= 0.5;
+  // メイン領域の中だけに穴を表示
+  float inMain = smoothstep(2.0, -2.0, sdMain);
+  holeFill *= inMain;
+  col = mix(col, u_cHole, holeFill);
+
+  // 穴の中心はもっと濃く
+  float holeCore = smoothstep(2.0, -3.0, distH - Hr*0.72*radHole(angleH, ht2)) * inMain;
+  col = mix(col, u_cHole, holeCore * 0.88);
+  float holeInner = smoothstep(0.5, -1.5, distH - Hr*0.50*radHole(angleH, ht2*1.08)) * inMain;
+  col = mix(col, u_cHole, holeInner * 0.94);
+
+  // ============================================================
+  // グレインテクスチャ：オブジェクト内側のみに乗せる
+  // ============================================================
+  if(u_grainAmt > 0.001){
+    float n = hash(floor(frag * 1.2));
+    float grain = (n - 0.5) * u_grainAmt;
+    // mainAlphaに応じて適用（オブジェクトの上だけ）
+    col += grain * (mainAlpha + aL2*0.5);
+  }
+
+  // カーソル
+  if(u_intActive > 0.5 && u_cursorPres > 0.01){
+    float cd = length(frag - u_cursor);
+    float cAlpha = smoothstep(u_cursorSize+0.5, u_cursorSize-0.5, cd) * u_cursorPres;
+    col = mix(col, u_cCursor, cAlpha);
+  }
+
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<script>
+var P={"cBg":"#F2EFE6","blobSize":30,"morphAmp":20,"morphSpd":100,"skewX":31,"skewY":0,"holeSize":4,"holeOX":-3,"holeOY":-6,"holeAmp":50,"holeSpd":55,"l0on":true,"l0scale":138,"l0blur":4,"l0alpha":36,"l1on":true,"l1scale":117,"l1blur":3,"l1alpha":31,"l2on":true,"l2scale":97,"l2blur":1,"l2alpha":65,"mainScale":88,"cInner":"#6a6caf","cOuter":"#99849f","midHue":-42,"midSat":10,"mainAlpha":97,"gradPos":70,"shOn":true,"shScale":70,"shBlur":4,"shStr":19,"cHole":"#EEE4D2","holeBlur":14,"holeAlpha":50,"intOn":true,"cursorSize":11,"cursorColor":"#a83a3a","engulfRange":50,"engulfStr":50,"swellAmt":4,"durationIn":1512,"durationOut":3000,"easeP1x":0.41,"easeP1y":0.19,"easeP2x":0,"easeP2y":1,"grainOpacity":0.05};
+
+const cv=document.getElementById('c');
+const stage=document.getElementById('stage');
+stage.style.background=P.cBg;
+
+const DPR=Math.min(window.devicePixelRatio||1,2);
+
+const gl=cv.getContext('webgl',{antialias:true,premultipliedAlpha:false,alpha:false});
+if(!gl){
+  document.body.innerHTML='<div style="padding:20px">WebGLが利用できません</div>';
+}
+
+function compileShader(type,src){
+  const sh=gl.createShader(type);
+  gl.shaderSource(sh,src);
+  gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(sh));
+    throw new Error('shader compile failed');
+  }
+  return sh;
+}
+const vs=compileShader(gl.VERTEX_SHADER,document.getElementById('vs').textContent);
+const fs=compileShader(gl.FRAGMENT_SHADER,document.getElementById('fs').textContent);
+const prog=gl.createProgram();
+gl.attachShader(prog,vs);gl.attachShader(prog,fs);
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){console.error(gl.getProgramInfoLog(prog));}
+gl.useProgram(prog);
+
+// フルスクリーンクワッド
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
+const aPos=gl.getAttribLocation(prog,'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+// uniform 取得
+const U={};
+['u_res','u_time','u_cursor','u_cursorPres','u_swell','u_intActive','u_bg','u_cInner','u_cMid','u_cOuter','u_cHole','u_cCursor','u_cursorSize','u_blobSize','u_morphAmp','u_morphSpd','u_holeSize','u_holeOff','u_holeAmp','u_holeSpd','u_skew','u_engulfRange','u_engulfStr','u_grainAmt','u_mainAlpha','u_gradPos'].forEach(n=>{U[n]=gl.getUniformLocation(prog,n);});
+
+function resize(){
+  const r=stage.getBoundingClientRect();
+  cv.width=r.width*DPR;cv.height=r.height*DPR;
+  gl.viewport(0,0,cv.width,cv.height);
+}
+resize();window.addEventListener('resize',resize);
+
+function hexToRgb01(hex){return[parseInt(hex.slice(1,3),16)/255,parseInt(hex.slice(3,5),16)/255,parseInt(hex.slice(5,7),16)/255];}
+function rgbToHsl(r,g,b){const mx=Math.max(r,g,b),mn=Math.min(r,g,b),l=(mx+mn)/2;if(mx===mn)return[0,0,l*100];const d=mx-mn,s=l>0.5?d/(2-mx-mn):d/(mx+mn);let h=0;if(mx===r)h=((g-b)/d+(g<b?6:0))/6;else if(mx===g)h=((b-r)/d+2)/6;else h=((r-g)/d+4)/6;return[h*360,s*100,l*100];}
+function hslToRgb01(h,s,l){h=((h%360)+360)%360;s=Math.max(0,Math.min(100,s))/100;l/=100;const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2;let r=0,g=0,b=0;if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}return[(r+m),(g+m),(b+m)];}
+function lerpColor01(a,b,f,hs,ss){const ha=rgbToHsl(a[0],a[1],a[2]),hb=rgbToHsl(b[0],b[1],b[2]);const mp=Math.sin(f*Math.PI);return hslToRgb01(ha[0]*(1-f)+hb[0]*f+hs*mp,ha[1]*(1-f)+hb[1]*f+ss*mp,ha[2]*(1-f)+hb[2]*f);}
+
+let CACHED={};
+function recalcColors(){
+  CACHED.bg=hexToRgb01(P.cBg);
+  CACHED.iRgb=hexToRgb01(P.cInner);
+  CACHED.oRgb=hexToRgb01(P.cOuter);
+  CACHED.hoRgb=hexToRgb01(P.cHole);
+  CACHED.cur=hexToRgb01(P.cursorColor);
+  CACHED.midRgb=lerpColor01(CACHED.iRgb,CACHED.oRgb,0.5,P.midHue,P.midSat);
+}
+recalcColors();
+
+function bezierY(t,p1y,p2y){const u=1-t;return 3*u*u*t*p1y+3*u*t*t*p2y+t*t*t;}
+function bezierX(t,p1x,p2x){const u=1-t;return 3*u*u*t*p1x+3*u*t*t*p2x+t*t*t;}
+function evalBezier(x,p1x,p1y,p2x,p2y){if(x<=0)return 0;if(x>=1)return 1;let lo=0,hi=1,t=x;for(let i=0;i<18;i++){t=(lo+hi)/2;const xt=bezierX(t,p1x,p2x);if(Math.abs(xt-x)<0.0005)break;if(xt<x)lo=t;else hi=t;}return bezierY(t,p1y,p2y);}
+
+// 内側判定（簡易：距離計算をJS側でも軽く）
+function isInsideBlob(x, y){
+  const W=cv.width/DPR,H=cv.height/DPR;
+  const cx=W/2,cy=H/2;
+  const minRes=Math.min(W,H);
+  const R=minRes*(P.blobSize/100);
+  const sx=1+P.skewX/100, sy=1+P.skewY/100;
+  const dx=x-cx, dy=y-cy;
+  const dxs=dx/sx, dys=dy/sy;
+  const angle=Math.atan2(dys,dxs);
+  const dist=Math.sqrt(dxs*dxs+dys*dys);
+  // メインblobのおおよその半径（モード合成は簡略化、平均的な値）
+  const rMain=R*(P.mainScale/100);
+  if(dist > rMain*1.05) return false;
+  // 穴チェック
+  const hox=R*(P.holeOX/100), hoy=R*(P.holeOY/100);
+  const Hr=R*(P.holeSize/100);
+  const dxh=x-cx-hox, dyh=y-cy-hoy;
+  const distH=Math.sqrt(dxh*dxh+dyh*dyh);
+  if(distH < Hr*1.0) return false;
+  return dist < rMain*0.95;
+}
+
+const mouse={x:-9999,y:-9999,visible:false,sx:-9999,sy:-9999};
+stage.addEventListener('mousemove',e=>{const r=stage.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.visible=true;});
+stage.addEventListener('mouseleave',()=>{mouse.visible=false;});
+const cs={progress:0,cursorPresence:1};
+
+let lastTime=performance.now();
+let t=0;
+
+function frame(){
+  const now=performance.now();
+  let dt=now-lastTime;if(dt>100)dt=16;lastTime=now;
+
+  if(mouse.visible){if(mouse.sx<-1000){mouse.sx=mouse.x;mouse.sy=mouse.y;}mouse.sx+=(mouse.x-mouse.sx)*0.18;mouse.sy+=(mouse.y-mouse.sy)*0.18;}
+
+  // 内側判定
+  const inside=mouse.visible && P.intOn && isInsideBlob(mouse.sx, mouse.sy);
+  if(inside)cs.progress=Math.min(1,cs.progress+dt/P.durationIn);
+  else cs.progress=Math.max(0,cs.progress-dt/P.durationOut);
+  const eased=evalBezier(cs.progress,P.easeP1x,P.easeP1y,P.easeP2x,P.easeP2y);
+  const swell=1+(P.swellAmt/100)*eased;
+  cs.cursorPresence=1-eased;
+
+  // uniform 設定
+  gl.uniform2f(U.u_res, cv.width, cv.height);
+  gl.uniform1f(U.u_time, t);
+  gl.uniform2f(U.u_cursor, mouse.sx*DPR, (cv.height/DPR - mouse.sy)*DPR);
+  gl.uniform1f(U.u_cursorPres, cs.cursorPresence);
+  gl.uniform1f(U.u_swell, swell);
+  gl.uniform1f(U.u_intActive, (P.intOn&&mouse.visible)?1.0:0.0);
+  gl.uniform3f(U.u_bg, CACHED.bg[0], CACHED.bg[1], CACHED.bg[2]);
+  gl.uniform3f(U.u_cInner, CACHED.iRgb[0], CACHED.iRgb[1], CACHED.iRgb[2]);
+  gl.uniform3f(U.u_cMid, CACHED.midRgb[0], CACHED.midRgb[1], CACHED.midRgb[2]);
+  gl.uniform3f(U.u_cOuter, CACHED.oRgb[0], CACHED.oRgb[1], CACHED.oRgb[2]);
+  gl.uniform3f(U.u_cHole, CACHED.hoRgb[0], CACHED.hoRgb[1], CACHED.hoRgb[2]);
+  gl.uniform3f(U.u_cCursor, CACHED.cur[0], CACHED.cur[1], CACHED.cur[2]);
+  gl.uniform1f(U.u_cursorSize, P.cursorSize*DPR);
+  gl.uniform1f(U.u_blobSize, P.blobSize/100);
+  gl.uniform1f(U.u_morphAmp, P.morphAmp/100);
+  gl.uniform1f(U.u_morphSpd, P.morphSpd/50);
+  gl.uniform1f(U.u_holeSize, P.holeSize/100);
+  gl.uniform2f(U.u_holeOff, P.holeOX/100, -P.holeOY/100); // GLは上が+
+  gl.uniform1f(U.u_holeAmp, P.holeAmp/100);
+  gl.uniform1f(U.u_holeSpd, P.holeSpd/50);
+  gl.uniform2f(U.u_skew, 1+P.skewX/100, 1+P.skewY/100);
+  gl.uniform1f(U.u_engulfRange, P.engulfRange*DPR);
+  gl.uniform1f(U.u_engulfStr, P.engulfStr/100);
+  gl.uniform1f(U.u_grainAmt, P.grainOpacity);
+  gl.uniform1f(U.u_mainAlpha, P.mainAlpha/100);
+  gl.uniform1f(U.u_gradPos, P.gradPos/100);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  t+=0.008;
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
