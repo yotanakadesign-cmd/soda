@@ -162,8 +162,6 @@ void main(){
 
   float gradT = clamp((dist / (R * 0.88 * 1.1)), 0.0, 1.0);
   vec3 mainCol;
-  float gradT = clamp((dist / (R * 0.88 * 1.1)), 0.0, 1.0);
-  vec3 mainCol;
   if(gradT < u_gradPos){
     float lt = gradT / max(u_gradPos, 0.001);
     mainCol = mix(u_cInner, u_cMid, lt);
