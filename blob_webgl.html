@@ -7,7 +7,7 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 html,body{width:100%;height:100%;overflow:hidden;background:transparent;}
-.stage{width:100%;height:100%;position:relative;background:#F2EFE6;cursor:none;}
+.stage{width:100%;height:100%;position:relative;background:#F2EFE6;cursor:none;touch-action:none;}
 canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
 </style>
 </head>
@@ -327,6 +327,20 @@ function isInsideBlob(x, y){
 const mouse={x:-9999,y:-9999,visible:false,sx:-9999,sy:-9999};
 stage.addEventListener('mousemove',e=>{const r=stage.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.visible=true;});
 stage.addEventListener('mouseleave',()=>{mouse.visible=false;});
+
+// タッチ対応：触れた位置に赤玉が出現、指を離したらフェードアウト
+function handleTouch(e){
+  e.preventDefault();
+  const r=stage.getBoundingClientRect();
+  const t=e.touches[0]||e.changedTouches[0];
+  if(t){mouse.x=t.clientX-r.left;mouse.y=t.clientY-r.top;mouse.visible=true;}
+}
+stage.addEventListener('touchstart',handleTouch,{passive:false});
+stage.addEventListener('touchmove',handleTouch,{passive:false});
+stage.addEventListener('touchend',()=>{
+  setTimeout(()=>{mouse.visible=false;},800);
+});
+
 const cs={progress:0,cursorPresence:1};
 
 let lastTime=performance.now();
