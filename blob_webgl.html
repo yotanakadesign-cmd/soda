@@ -170,7 +170,7 @@ void main(){
     mainCol = mix(u_cMid, u_cOuter, lt);
 
   // カーソル吸収時：内側から黄色が滲み出す（ムラあり）
-  vec3 yellow = vec3(0.96, 0.85, 0.45);
+  vec3 yellow = vec3(0.98, 0.92, 0.65);
   float eased = 1.0 - u_cursorPres;
   float yMix = eased * (1.0 - gradT) * 0.7;
   // ノイズで不均一に
