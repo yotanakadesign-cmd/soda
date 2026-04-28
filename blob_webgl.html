@@ -78,27 +78,43 @@ float radHole(float angle, float t){
   return r;
 }
 
-// Value Noise（連続ノイズ）：smooth interpolation で角ばらない
-float hash21(vec2 p){
-  p = fract(p*vec2(123.34, 456.21));
-  p += dot(p, p+45.32);
-  return fract(p.x*p.y);
+// Simplex Noise（連続ノイズ・等方性）：valueNoiseより格子が出ない
+vec3 mod289(vec3 x){return x - floor(x*(1.0/289.0))*289.0;}
+vec2 mod289(vec2 x){return x - floor(x*(1.0/289.0))*289.0;}
+vec3 permute(vec3 x){return mod289(((x*34.0)+1.0)*x);}
+
+float snoise(vec2 v){
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+  vec2 i  = floor(v + dot(v, C.yy));
+  vec2 x0 = v - i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod289(i);
+  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m;
+  m = m*m;
+  vec3 x = 2.0 * fract(p * C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+  vec3 g;
+  g.x  = a0.x  * x0.x  + h.x  * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
 }
-float valueNoise(vec2 p){
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  // smoothstep補間
-  vec2 u = f*f*(3.0-2.0*f);
-  float a = hash21(i);
-  float b = hash21(i + vec2(1.0, 0.0));
-  float c = hash21(i + vec2(0.0, 1.0));
-  float d = hash21(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-// 2オクターブで有機的な質感に
+
+// 多オクターブFBM：細かい粒〜大きなムラまで合成
 float fbm(vec2 p){
-  float v = valueNoise(p) * 0.6;
-  v += valueNoise(p * 2.3) * 0.3;
+  float v = 0.0;
+  float a = 0.5;
+  for(int i=0;i<4;i++){
+    v += snoise(p) * a;
+    p *= 2.13;
+    a *= 0.5;
+  }
   return v;
 }
 
@@ -170,33 +186,34 @@ void main(){
     mainCol = mix(u_cMid, u_cOuter, lt);
   }
 
+  // 色のムラ：低周波simplexノイズで明度を揺らす（染料の不均一感）
+  // 大きなブロブ状の濃淡を作る
+  float colorMura = snoise(frag * 0.0035 + vec2(u_time * 0.3, 0.0)) * 0.5
+                  + snoise(frag * 0.008 - vec2(u_time * 0.2, u_time * 0.15)) * 0.3;
+  // -0.4..0.4 程度に調整
+  colorMura *= 0.12;
+  mainCol += vec3(colorMura);
+
   vec3 col = u_bg;
 
-  // 各レイヤーで中間色相を活かす
-  // L0：内側→中間色を使う（赤みのある層）
   float aL0 = smoothstep(20.0, -5.0, sdL0) * 0.36;
   col = mix(col, u_cMid, aL0);
 
-  // L1：中間色をベースに
   float aL1 = smoothstep(8.0, -3.0, sdL1) * 0.31;
   col = mix(col, u_cMid, aL1);
 
-  // L2：外縁色寄り
   float aL2 = smoothstep(3.0, -2.0, sdL2) * 0.65;
   col = mix(col, u_cOuter, aL2);
 
-  // Main
   float mainAlpha = smoothstep(2.0, -2.0, sdMain) * u_mainAlpha;
   float holeMask = smoothstep(-3.0, 3.0, sdHole);
   mainAlpha *= holeMask;
   col = mix(col, mainCol, mainAlpha);
 
-  // Shading
   float shadAlpha = smoothstep(8.0, -4.0, dist - R*0.70*radOuter(angle, t3*0.98+0.3)*u_swell) * 0.19;
   shadAlpha *= holeMask;
   col = mix(col, u_cInner * 0.7, shadAlpha);
 
-  // 穴の塗り
   float holeFill = smoothstep(8.0, -3.0, sdHoleSoft);
   holeFill *= 0.5;
   float inMain = smoothstep(2.0, -2.0, sdMain);
@@ -208,11 +225,10 @@ void main(){
   float holeInner = smoothstep(0.5, -1.5, distH - Hr*0.50*radHole(angleH, ht2*1.08)) * inMain;
   col = mix(col, u_cHole, holeInner * 0.94);
 
-  // フィルムグレイン：連続ノイズで柔らかく
+  // フィルムグレイン：simplexベース・多オクターブで自然な粒状感
   if(u_grainAmt > 0.001){
     float n = fbm(frag * u_grainScale);
-    float grain = (n - 0.5) * u_grainAmt;
-    // オブジェクト全体（外側のレイヤーも含む）に乗せる
+    float grain = n * u_grainAmt;
     float onObject = max(max(aL0, aL1), max(aL2, mainAlpha));
     col += grain * onObject;
   }
@@ -228,7 +244,7 @@ void main(){
 </script>
 
 <script>
-var P={"cBg":"#F2EFE6","blobSize":30,"morphAmp":20,"morphSpd":100,"skewX":31,"skewY":0,"holeSize":4,"holeOX":-3,"holeOY":-6,"holeAmp":50,"holeSpd":55,"l0on":true,"l0scale":138,"l0blur":4,"l0alpha":36,"l1on":true,"l1scale":117,"l1blur":3,"l1alpha":31,"l2on":true,"l2scale":97,"l2blur":1,"l2alpha":65,"mainScale":88,"cInner":"#6a6caf","cOuter":"#99849f","midHue":-42,"midSat":10,"mainAlpha":97,"gradPos":70,"shOn":true,"shScale":70,"shBlur":4,"shStr":19,"cHole":"#EEE4D2","holeBlur":14,"holeAlpha":50,"intOn":true,"cursorSize":11,"cursorColor":"#a83a3a","engulfRange":50,"engulfStr":50,"swellAmt":4,"durationIn":1512,"durationOut":3000,"easeP1x":0.41,"easeP1y":0.19,"easeP2x":0,"easeP2y":1,"grainOpacity":0.05,"grainScale":0.4};
+var P={"cBg":"#F2EFE6","blobSize":30,"morphAmp":20,"morphSpd":100,"skewX":31,"skewY":0,"holeSize":4,"holeOX":-3,"holeOY":-6,"holeAmp":50,"holeSpd":55,"l0on":true,"l0scale":138,"l0blur":4,"l0alpha":36,"l1on":true,"l1scale":117,"l1blur":3,"l1alpha":31,"l2on":true,"l2scale":97,"l2blur":1,"l2alpha":65,"mainScale":88,"cInner":"#6a6caf","cOuter":"#99849f","midHue":-42,"midSat":10,"mainAlpha":97,"gradPos":70,"shOn":true,"shScale":70,"shBlur":4,"shStr":19,"cHole":"#EEE4D2","holeBlur":14,"holeAlpha":50,"intOn":true,"cursorSize":11,"cursorColor":"#a83a3a","engulfRange":50,"engulfStr":50,"swellAmt":4,"durationIn":1512,"durationOut":3000,"easeP1x":0.41,"easeP1y":0.19,"easeP2x":0,"easeP2y":1,"grainOpacity":0.06,"grainScale":0.8};
 
 const cv=document.getElementById('c');
 const stage=document.getElementById('stage');
@@ -327,7 +343,6 @@ function frame(){
   const now=performance.now();
   let dt=now-lastTime;if(dt>100)dt=16;lastTime=now;
 
-  // 追従を速く（0.18 → 0.36）
   if(mouse.visible){if(mouse.sx<-1000){mouse.sx=mouse.x;mouse.sy=mouse.y;}mouse.sx+=(mouse.x-mouse.sx)*0.36;mouse.sy+=(mouse.y-mouse.sy)*0.36;}
 
   const inside=mouse.visible && P.intOn && isInsideBlob(mouse.sx, mouse.sy);
