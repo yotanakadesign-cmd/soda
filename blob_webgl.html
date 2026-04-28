@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -52,6 +51,7 @@ uniform vec2  u_skew;
 uniform float u_engulfRange;
 uniform float u_engulfStr;
 uniform float u_grainAmt;
+uniform float u_grainScale;
 uniform float u_mainAlpha;
 uniform float u_gradPos;
 
@@ -78,10 +78,28 @@ float radHole(float angle, float t){
   return r;
 }
 
-float hash(vec2 p){
+// Value Noise（連続ノイズ）：smooth interpolation で角ばらない
+float hash21(vec2 p){
   p = fract(p*vec2(123.34, 456.21));
   p += dot(p, p+45.32);
   return fract(p.x*p.y);
+}
+float valueNoise(vec2 p){
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  // smoothstep補間
+  vec2 u = f*f*(3.0-2.0*f);
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+// 2オクターブで有機的な質感に
+float fbm(vec2 p){
+  float v = valueNoise(p) * 0.6;
+  v += valueNoise(p * 2.3) * 0.3;
+  return v;
 }
 
 vec2 applyEngulf(vec2 pos, vec2 cursor, float range, float strength, float presence){
@@ -154,24 +172,31 @@ void main(){
 
   vec3 col = u_bg;
 
+  // 各レイヤーで中間色相を活かす
+  // L0：内側→中間色を使う（赤みのある層）
   float aL0 = smoothstep(20.0, -5.0, sdL0) * 0.36;
-  col = mix(col, u_cInner, aL0);
+  col = mix(col, u_cMid, aL0);
 
+  // L1：中間色をベースに
   float aL1 = smoothstep(8.0, -3.0, sdL1) * 0.31;
   col = mix(col, u_cMid, aL1);
 
+  // L2：外縁色寄り
   float aL2 = smoothstep(3.0, -2.0, sdL2) * 0.65;
   col = mix(col, u_cOuter, aL2);
 
+  // Main
   float mainAlpha = smoothstep(2.0, -2.0, sdMain) * u_mainAlpha;
   float holeMask = smoothstep(-3.0, 3.0, sdHole);
   mainAlpha *= holeMask;
   col = mix(col, mainCol, mainAlpha);
 
+  // Shading
   float shadAlpha = smoothstep(8.0, -4.0, dist - R*0.70*radOuter(angle, t3*0.98+0.3)*u_swell) * 0.19;
   shadAlpha *= holeMask;
   col = mix(col, u_cInner * 0.7, shadAlpha);
 
+  // 穴の塗り
   float holeFill = smoothstep(8.0, -3.0, sdHoleSoft);
   holeFill *= 0.5;
   float inMain = smoothstep(2.0, -2.0, sdMain);
@@ -183,10 +208,13 @@ void main(){
   float holeInner = smoothstep(0.5, -1.5, distH - Hr*0.50*radHole(angleH, ht2*1.08)) * inMain;
   col = mix(col, u_cHole, holeInner * 0.94);
 
+  // フィルムグレイン：連続ノイズで柔らかく
   if(u_grainAmt > 0.001){
-    float n = hash(floor(frag * 1.2));
+    float n = fbm(frag * u_grainScale);
     float grain = (n - 0.5) * u_grainAmt;
-    col += grain * (mainAlpha + aL2*0.5);
+    // オブジェクト全体（外側のレイヤーも含む）に乗せる
+    float onObject = max(max(aL0, aL1), max(aL2, mainAlpha));
+    col += grain * onObject;
   }
 
   if(u_intActive > 0.5 && u_cursorPres > 0.01){
@@ -200,7 +228,7 @@ void main(){
 </script>
 
 <script>
-var P={"cBg":"#F2EFE6","blobSize":30,"morphAmp":20,"morphSpd":100,"skewX":31,"skewY":0,"holeSize":4,"holeOX":-3,"holeOY":-6,"holeAmp":50,"holeSpd":55,"l0on":true,"l0scale":138,"l0blur":4,"l0alpha":36,"l1on":true,"l1scale":117,"l1blur":3,"l1alpha":31,"l2on":true,"l2scale":97,"l2blur":1,"l2alpha":65,"mainScale":88,"cInner":"#6a6caf","cOuter":"#99849f","midHue":-42,"midSat":10,"mainAlpha":97,"gradPos":70,"shOn":true,"shScale":70,"shBlur":4,"shStr":19,"cHole":"#EEE4D2","holeBlur":14,"holeAlpha":50,"intOn":true,"cursorSize":11,"cursorColor":"#a83a3a","engulfRange":50,"engulfStr":50,"swellAmt":4,"durationIn":1512,"durationOut":3000,"easeP1x":0.41,"easeP1y":0.19,"easeP2x":0,"easeP2y":1,"grainOpacity":0.05};
+var P={"cBg":"#F2EFE6","blobSize":30,"morphAmp":20,"morphSpd":100,"skewX":31,"skewY":0,"holeSize":4,"holeOX":-3,"holeOY":-6,"holeAmp":50,"holeSpd":55,"l0on":true,"l0scale":138,"l0blur":4,"l0alpha":36,"l1on":true,"l1scale":117,"l1blur":3,"l1alpha":31,"l2on":true,"l2scale":97,"l2blur":1,"l2alpha":65,"mainScale":88,"cInner":"#6a6caf","cOuter":"#99849f","midHue":-42,"midSat":10,"mainAlpha":97,"gradPos":70,"shOn":true,"shScale":70,"shBlur":4,"shStr":19,"cHole":"#EEE4D2","holeBlur":14,"holeAlpha":50,"intOn":true,"cursorSize":11,"cursorColor":"#a83a3a","engulfRange":50,"engulfStr":50,"swellAmt":4,"durationIn":1512,"durationOut":3000,"easeP1x":0.41,"easeP1y":0.19,"easeP2x":0,"easeP2y":1,"grainOpacity":0.05,"grainScale":0.4};
 
 const cv=document.getElementById('c');
 const stage=document.getElementById('stage');
@@ -239,7 +267,7 @@ gl.enableVertexAttribArray(aPos);
 gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
 
 const U={};
-['u_res','u_time','u_cursor','u_cursorPres','u_swell','u_intActive','u_bg','u_cInner','u_cMid','u_cOuter','u_cHole','u_cCursor','u_cursorSize','u_blobSize','u_morphAmp','u_morphSpd','u_holeSize','u_holeOff','u_holeAmp','u_holeSpd','u_skew','u_engulfRange','u_engulfStr','u_grainAmt','u_mainAlpha','u_gradPos'].forEach(n=>{U[n]=gl.getUniformLocation(prog,n);});
+['u_res','u_time','u_cursor','u_cursorPres','u_swell','u_intActive','u_bg','u_cInner','u_cMid','u_cOuter','u_cHole','u_cCursor','u_cursorSize','u_blobSize','u_morphAmp','u_morphSpd','u_holeSize','u_holeOff','u_holeAmp','u_holeSpd','u_skew','u_engulfRange','u_engulfStr','u_grainAmt','u_grainScale','u_mainAlpha','u_gradPos'].forEach(n=>{U[n]=gl.getUniformLocation(prog,n);});
 
 function resize(){
   const r=stage.getBoundingClientRect();
@@ -299,7 +327,8 @@ function frame(){
   const now=performance.now();
   let dt=now-lastTime;if(dt>100)dt=16;lastTime=now;
 
-  if(mouse.visible){if(mouse.sx<-1000){mouse.sx=mouse.x;mouse.sy=mouse.y;}mouse.sx+=(mouse.x-mouse.sx)*0.18;mouse.sy+=(mouse.y-mouse.sy)*0.18;}
+  // 追従を速く（0.18 → 0.36）
+  if(mouse.visible){if(mouse.sx<-1000){mouse.sx=mouse.x;mouse.sy=mouse.y;}mouse.sx+=(mouse.x-mouse.sx)*0.36;mouse.sy+=(mouse.y-mouse.sy)*0.36;}
 
   const inside=mouse.visible && P.intOn && isInsideBlob(mouse.sx, mouse.sy);
   if(inside)cs.progress=Math.min(1,cs.progress+dt/P.durationIn);
@@ -332,6 +361,7 @@ function frame(){
   gl.uniform1f(U.u_engulfRange, P.engulfRange*DPR);
   gl.uniform1f(U.u_engulfStr, P.engulfStr/100);
   gl.uniform1f(U.u_grainAmt, P.grainOpacity);
+  gl.uniform1f(U.u_grainScale, P.grainScale);
   gl.uniform1f(U.u_mainAlpha, P.mainAlpha/100);
   gl.uniform1f(U.u_gradPos, P.gradPos/100);
 
