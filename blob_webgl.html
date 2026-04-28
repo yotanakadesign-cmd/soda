@@ -184,13 +184,7 @@ void main(){
   float yNoise = valueNoise(sampledFrag * 0.012 + vec2(u_time * 0.5, 0.0));
   yMix *= (0.4 + yNoise * 0.8);
   mainCol = mix(mainCol, yellow, yMix);
-
-  float yMix = eased * (1.0 - gradT) * 0.7;
-  // ノイズで不均一に
-  float yNoise = valueNoise(sampledFrag * 0.012 + vec2(u_time * 0.5, 0.0));
-  yMix *= (0.4 + yNoise * 0.8);
-  mainCol = mix(mainCol, yellow, yMix);
-  }
+  
 
   vec3 col = u_bg;
 
