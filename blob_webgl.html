@@ -314,12 +314,10 @@ function recalcColors(){
 }
 recalcColors();
 
-// 色相シフト設定
 const HUE_SHIFT={
-  speed: 0.04,    // 度/秒（ゆっくり：1周約9000秒…じゃ遅すぎる、調整）
-  amplitude: 12,  // ±12度の振れ幅
+  speed: 0.12,    // 0.04 → 0.12（3倍速く）
+  amplitude: 40,  // 12 → 40（±40度＝紫→青/赤紫まで動く）
 };
-
 function updateColors(timeSec){
   // sin波で±amplitude度の範囲を行き来
   const shift = Math.sin(timeSec * HUE_SHIFT.speed) * HUE_SHIFT.amplitude;
