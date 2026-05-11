@@ -291,6 +291,19 @@ function hslToRgb01(h,s,l){h=((h%360)+360)%360;s=Math.max(0,Math.min(100,s))/100
 function lerpColor01(a,b,f,hs,ss){const ha=rgbToHsl(a[0],a[1],a[2]),hb=rgbToHsl(b[0],b[1],b[2]);const mp=Math.sin(f*Math.PI);return hslToRgb01(ha[0]*(1-f)+hb[0]*f+hs*mp,ha[1]*(1-f)+hb[1]*f+ss*mp,ha[2]*(1-f)+hb[2]*f);}
 
 let CACHED={};
+let BASE_HSL={};
+
+function rgbToHslFromHex(hex){
+  const rgb=hexToRgb01(hex);
+  return rgbToHsl(rgb[0],rgb[1],rgb[2]);
+}
+function storeBaseHsl(){
+  BASE_HSL.inner=rgbToHslFromHex(P.cInner);
+  BASE_HSL.outer=rgbToHslFromHex(P.cOuter);
+  BASE_HSL.hole=rgbToHslFromHex(P.cHole);
+}
+storeBaseHsl();
+
 function recalcColors(){
   CACHED.bg=hexToRgb01(P.cBg);
   CACHED.iRgb=hexToRgb01(P.cInner);
@@ -300,6 +313,24 @@ function recalcColors(){
   CACHED.midRgb=lerpColor01(CACHED.iRgb,CACHED.oRgb,0.5,P.midHue,P.midSat);
 }
 recalcColors();
+
+// 色相シフト設定
+const HUE_SHIFT={
+  speed: 0.04,    // 度/秒（ゆっくり：1周約9000秒…じゃ遅すぎる、調整）
+  amplitude: 12,  // ±12度の振れ幅
+};
+
+function updateColors(timeSec){
+  // sin波で±amplitude度の範囲を行き来
+  const shift = Math.sin(timeSec * HUE_SHIFT.speed) * HUE_SHIFT.amplitude;
+  const i = BASE_HSL.inner;
+  const o = BASE_HSL.outer;
+  const h = BASE_HSL.hole;
+  CACHED.iRgb = hslToRgb01(i[0]+shift, i[1], i[2]);
+  CACHED.oRgb = hslToRgb01(o[0]+shift, o[1], o[2]);
+  CACHED.hoRgb = hslToRgb01(h[0]+shift*0.4, h[1], h[2]); // 穴は控えめに
+  CACHED.midRgb = lerpColor01(CACHED.iRgb, CACHED.oRgb, 0.5, P.midHue, P.midSat);
+}
 
 function bezierY(t,p1y,p2y){const u=1-t;return 3*u*u*t*p1y+3*u*t*t*p2y+t*t*t;}
 function bezierX(t,p1x,p2x){const u=1-t;return 3*u*u*t*p1x+3*u*t*t*p2x+t*t*t;}
@@ -349,6 +380,7 @@ let t=0;
 function frame(){
   const now=performance.now();
   let dt=now-lastTime;if(dt>100)dt=16;lastTime=now;
+    updateColors(now * 0.001); 
 
   // 追従を速く（0.18 → 0.36）
   if(mouse.visible){if(mouse.sx<-1000){mouse.sx=mouse.x;mouse.sy=mouse.y;}mouse.sx+=(mouse.x-mouse.sx)*0.36;mouse.sy+=(mouse.y-mouse.sy)*0.36;}
